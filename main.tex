@@ -2,6 +2,9 @@
 \usepackage[utf8]{inputenc}
 \usepackage{listings}
 \usepackage{xcolor}
+\usepackage[many,most]{tcolorbox}
+\usepackage[a4paper, portrait, margin=1.5in]{geometry}
+
 
 \newcommand{\inlinecode}[1]{\colorbox{black}{\lstinline[basicstyle=\ttfamily\color{white}]|#1|}}
 \newcommand{\varname}[1]{{\lstinline[basicstyle=\ttfamily\color{gray}]|#1|}}
@@ -10,7 +13,16 @@
 \newcommand{\hostname}[1]{{\lstinline[basicstyle=\ttfamily\color{teal}]|#1|}}
 \newcommand{\path}[1]{{\lstinline[basicstyle=\ttfamily\color{blue}]|#1|}}
 
+\newtcblisting{commandshell}[1]{width=\textwidth + 1cm,colback=black,colupper=white,colframe=yellow!30!black,
+	listing only,listing options={language=sh},
+    every listing line={\textcolor{red}{\small\ttfamily\bfseries #1 \$ }}}
+\newtcblisting{smallcommandshell}[1]{width=\textwidth + 1cm,colback=black,colupper=white,colframe=yellow!30!black,
+	listing only,listing options={basicstyle=\footnotesize\ttfamily,escapechar=|,language=sh},
+    every listing line={\textcolor{red}{\small\ttfamily\bfseries #1 \$ }}}
 
+\newtcblisting{shelloutput}[1]{width=\textwidth + 1cm,colback=black,colupper=white,colframe=yellow!30!black,
+    listing only, title=\textsf{#1},
+    title after break={\raggedleft\textsf{#1}, continued}}
 \author{Denys Vitali}
 \title{Esperienza 9 - OpenVPN}
 \begin{document}
@@ -227,9 +239,9 @@ Il nostro obiettivo è quello di poter comunicare con la sottorete \ipaddress{10
 \ipaddress{192.168.0.0/24} (\interface{br0}) utilizzando \ipaddress{192.168.3.2} (\interface{br1})
 come server OpenVPN.
 
-\subsection{Installazione del pacchetto OpenVPN}
+\subsection{Installazione del pacchetto OpenVPN ed easy-rsa}
 Al fine di installare e configurare OpenVPN dobbiamo dapprima scaricare ed installare 
-OpenVPN su \hostname{Alpine-VPN-Server}
+OpenVPN ed easy-rsa su \hostname{Alpine-VPN-Server}
 
 \begin{lstlisting}
 Alpine-VPN-Server - / # apk add openvpn
@@ -245,6 +257,14 @@ Executing iproute2-4.13.0-r0.post-install
 Executing openvpn-2.4.4-r1.pre-install
 Executing busybox-1.27.2-r7.trigger
 OK: 8 MiB in 19 packages
+
+Alpine-VPN-Server - / # apk add easy-rsa
+(1/4) Installing libcrypto1.0 (1.0.2o-r0)
+(2/4) Installing libssl1.0 (1.0.2o-r0)
+(3/4) Installing openssl (1.0.2o-r0)
+(4/4) Installing easy-rsa (3.0.3-r0)
+Executing busybox-1.27.2-r7.trigger
+OK: 12 MiB in 23 packages
 \end{lstlisting}
 
 
@@ -257,11 +277,11 @@ proto udp
 dev tun
 ca openvpn_certs/server-ca.pem
 cert openvpn_certs/server-cert.pem
-dh openvpn_certs/dh1024.pem #to generate by hand #openssl dhparam -out dh1024.pem 1024
-server 10.0.0.0 255.255.255.0
+dh openvpn_certs/dh1024.pem
+server 10.100.0.2 255.255.255.0
 ifconfig-pool-persist ipp.txt
-push "route 10.0.0.0 255.0.0.0"
-push "dhcp-option DNS 10.0.0.1"
+push "route 10.100.0.0 255.0.0.0"
+push "dhcp-option DNS 1.1.1.1"
 keepalive 10 120
 comp-lzo
 user nobody
@@ -272,4 +292,154 @@ status /var/log/openvpn-status.log
 log-append  /var/log/openvpn.log
 verb 3
 \end{lstlisting}
+
+\subsection{Configurazione della PKI}
+\begin{commandshell}{Alpine-VPN-Server}
+cd /usr/share/easy-rsa
+./easyrsa init-pki
+./easyrsa build-ca
+./easyrsa gen-dh
+\end{commandshell}
+
+\begin{shelloutput}{Configurazione della PKI}
+Alpine-VPN-Server - /usr/share/easy-rsa # ./easyrsa init-pki
+
+init-pki complete; you may now create a CA or requests.
+Your newly created PKI dir is: /usr/share/easy-rsa/pki
+
+Alpine-VPN-Server - /usr/share/easy-rsa # ./easyrsa build-ca
+Generating a 2048 bit RSA private key
+................................+++
+.........+++
+writing new private key to '/usr/share/easy-rsa/pki/private/ca.key.XXXXaogNKO'
+Enter PEM pass phrase:
+Verifying - Enter PEM pass phrase:
+-----
+You are about to be asked to enter information that will be incorporated
+into your certificate request.
+What you are about to enter is what is called a Distinguished Name or a DN.
+There are quite a few fields but you can leave some blank
+For some fields there will be a default value,
+If you enter '.', the field will be left blank.
+-----
+Common Name (eg: your user, host, or server name) [Easy-RSA CA]: OpenVPN Server
+
+CA creation complete and you may now import and sign cert requests.
+Your new CA certificate file for publishing is at:
+/usr/share/easy-rsa/pki/ca.crt
+
+Alpine-VPN-Server - /usr/share/easy-rsa #     ./easyrsa gen-dh
+Generating DH parameters, 2048 bit long safe prime, generator 2
+This is going to take a long time
+... (...)
+
+DH parameters of size 2048 created at /usr/share/easy-rsa/pki/dh.pem
+\end{shelloutput}
+\vspace{1em}
+\subsection{Generazione di un certificato client} In questo step genereremo la richiesta per 
+un certificato di autenticazione per un client, in questo caso \hostname{Alpine-Client}.
+\begin{commandshell}{Alpine-VPN-Server}
+./easyrsa gen-req Alpine-Client
+\end{commandshell}
+\begin{shelloutput}{Generazione di un certificato client}
+Alpine-VPN-Server - /usr/share/easy-rsa # ./easyrsa gen-req Alpine-Client
+Generating a 2048 bit RSA private key
+................................................................................+++
+........................................................................................................+++
+writing new private key to '/usr/share/easy-rsa/pki/private/Alpine-Client.key.XXXXhBjLGN'
+Enter PEM pass phrase:
+Verifying - Enter PEM pass phrase:
+-----
+You are about to be asked to enter information that will be incorporated
+into your certificate request.
+What you are about to enter is what is called a Distinguished Name or a DN.
+There are quite a few fields but you can leave some blank
+For some fields there will be a default value,
+If you enter '.', the field will be left blank.
+-----
+Common Name (eg: your user, host, or server name) [Alpine-Client]:
+
+Keypair and certificate request completed. Your files are:
+req: /usr/share/easy-rsa/pki/reqs/Alpine-Client.req
+key: /usr/share/easy-rsa/pki/private/Alpine-Client.key
+\end{shelloutput}
+
+\paragraph{Firma del certificato con la CA} Al fine di firmare la richiesta di certificato
+appena generata, è necessario eseguire il seguente comando:
+\begin{commandshell}{Alpine-VPN-Server}
+./easyrsa sign-req client Alpine-Client
+\end{commandshell}
+
+\vspace{1em}
+
+\begin{shelloutput}{Output della firma di una certificate request}
+You are about to sign the following certificate.
+Please check over the details shown below for accuracy. Note that this request
+has not been cryptographically verified. Please be sure it came from a trusted
+source or that you have verified the request checksum with the sender.
+
+Request subject, to be signed as a client certificate for 3650 days:
+
+subject=
+commonName                = Alpine-Client
+
+
+Type the word 'yes' to continue, or any other input to abort.
+Confirm request details: yes
+Using configuration from ./openssl-1.0.cnf
+Enter pass phrase for /usr/share/easy-rsa/pki/private/ca.key:
+Check that the request matches the signature
+Signature ok
+The Subject's Distinguished Name is as follows
+commonName            :ASN.1 12:'Alpine-Client'
+Certificate is to be certified until May 15 11:43:01 2028 GMT (3650 days)
+
+Write out database with 1 new entries
+Data Base Updated
+
+Certificate created at: /usr/share/easy-rsa/pki/issued/Alpine-Client.crt
+\end{shelloutput}
+
+\vspace{1em}
+La coppia di chiave / certificato è disponibile ora in \\
+\path{/usr/share/easy-rsa/pki/issued/Alpine-Client.crt}
+(certificato) \\ 
+\path{/usr/share/easy-rsa/pki/private/Alpine-Client.key} (private key).
+\pagebreak
+\subsection{Creazione della configurazione}
+Creiamo la configurazione inserendo in un file \path{alpine-client.ovpn}
+il seguente contenuto
+\begin{lstlisting}
+client
+remote 192.168.3.2 1194
+user nobody
+group nobody
+ca ca.crt
+cert client.crt
+key client.key
+\end{lstlisting}
+\vspace{1em}
+Insieme al file .ovpn dovremo fornire 3 altri file, ossia \path{ca.crt}, \path{client.crt} e
+\path{client.key}. Gli ultimi due sono i file di certificato e chiave privata (private key) 
+generati nel passaggio precedente, mentre \path{ca.crt} è la Public Key della C
+\pagebreak
+
+\section{Utilizzo del client OpenVPN}
+Ora passiamo all'host \hostname{Alpine-Client}. Innanzitutto occorre copiare i dati generati dal server
+da \hostname{Alpine-VPN-Server} a \hostname{Alpine-Client}. Per farlo usiamo il seguente comando
+
+\begin{smallcommandshell}{}
+docker cp 43aae9c63b33:/usr/share/easy-rsa/pki/issued/Alpine-Client.crt .
+docker cp 43aae9c63b33:/usr/share/easy-rsa/pki/private/Alpine-Client.key .
+docker cp 43aae9c63b33:/usr/share/easy-rsa/pki/ca.crt .
+\end{smallcommandshell}
+
+\begin{smallcommandshell}{}
+docker cp Alpine-Client.crt 9f52f7217280:/root
+docker cp Alpine-Client.key 9f52f7217280:/root
+docker cp ca.crt 9f52f7217280:/root
+\end{smallcommandshell}
+
+dove \varname{43aae9c63b33} è l'ID del container di \hostname{Alpine-VPN-Server} e \varname{9f52f7217280} quello
+di \hostname{Alpine-Client}.
 \end{document}

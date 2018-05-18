@@ -1,0 +1,275 @@
+\documentclass{article}
+\usepackage[utf8]{inputenc}
+\usepackage{listings}
+\usepackage{xcolor}
+
+\newcommand{\inlinecode}[1]{\colorbox{black}{\lstinline[basicstyle=\ttfamily\color{white}]|#1|}}
+\newcommand{\varname}[1]{{\lstinline[basicstyle=\ttfamily\color{gray}]|#1|}}
+\newcommand{\interface}[1]{{\lstinline[basicstyle=\ttfamily\color{brown}]|#1|}}
+\newcommand{\ipaddress}[1]{{\lstinline[basicstyle=\ttfamily\color{purple}]|#1|}}
+\newcommand{\hostname}[1]{{\lstinline[basicstyle=\ttfamily\color{teal}]|#1|}}
+\newcommand{\path}[1]{{\lstinline[basicstyle=\ttfamily\color{blue}]|#1|}}
+
+
+\author{Denys Vitali}
+\title{Esperienza 9 - OpenVPN}
+\begin{document}
+\maketitle
+\pagebreak
+\section{Introduzione}
+\subsection{Tipi di VPN}
+\subsubsection{PPTP}
+Metodo obsoleto di implementare delle VPN, con diversi problemi di sicurezza noti.
+PPTP si basa sul protocollo TCP ed un protocollo di tunnelling (GRE) usato per incapsulare i pacchetti PPP\footnote{Point-to-Point Protocol}.
+\\
+La specifica PPTP non descrive funzionalità di cifratura o autenticazione, ma l'implementazione 
+più comune (utilizzata nei prodotti di Microsoft Windows) implementa diversi livelli di sicurezza ed autenticazione. \\
+\\
+La porta utilizzata è la porta TCP/1723. Nell'implementazione di Microsoft il traffico PPP può essere
+autenticato con PAP\footnote{Password Authentication Protocol}, CHAP\footnote{Challenge-Handshake Authentication Protocol} e MS-CHAP\footnote{Versione di Microsoft del CHAP} v1 o v2.
+
+\subsubsection{IPsec}
+L'Internet Protocol Security (IPsec) è un insieme di protocolli utilizzati per l'autenticazione e la cifratura di pacchetti inviati su una rete.\\
+IPsec viene utilizzato per proteggere il flusso di dati fra due host (host-to-host), fra
+una coppia di gateway (network-to-network) oppure fra un gateway ed un host (network-to-host).\\
+IPsec usa una crittografia end-to-end per rendere sicura la connessione.
+\\
+L'insieme di protocolli include le seguenti funzionalità:
+\begin{itemize}
+    \item \textbf{Authentication Headers (AH)}\\
+    Fornice garanzia sull'integrità dei dati e la loro origine per datagrammi IP, fornendo una protezione contro i replay attacks\footnote{Attacco nel quale il pacchetto cifrato viene ritrasmesso / ritardato}
+    \item \textbf{Encapsulating Security Payloads (ESP)}\\
+    Fornisce confidenzialità, data-origin authentication, integrità connectionless ed un servizio anti-replay.
+    \item \textbf{Security Associations (SA)}\\
+    Fornisce un'insieme di algoritmi e dati che forniscono i parametri necessari per le operazioni di AH e/o ESP.
+\end{itemize}
+
+\subsubsection{OpenVPN}
+Software Open Source che implementa le tecniche di VPN per creare una connessione sicura point-to-point oppure site-to-site.
+Implementa un protocollo di sicurezza personalizzato che usa SSL/TLS per lo scambio delle chiavi. \\
+Il software è in grado di superare NATs e firewalls.\\
+OpenVPN permette ai peers di autenticarsi a vicenda usando pre-shared keys, certificati oppure combinazioni di username / password. \\
+In una configurazione multi-client il server può rilasciare un certificato di autenticazione per ogni client, usando delle firme ed una CA\footnote{Certificate Authority}.\\
+Il programma utilizza molto le libreria di cifratura di OpenSSL, così come il protocollo TLS, ed include diverse funzionalità di sicurezza e di controllo.\\
+È possibile utilizzare OpenVPN su diversi sistemi, inclusi quelli embedded (come OpenWRT o DD-WRT).\\
+\\
+La porta utilizzata da OpenVPN è solitamente la UDP/1194.
+
+\pagebreak
+\section{Creazione dell'ambiente per GNS3}
+
+\subsection{Setup dei container}
+Per questa esperienza useremo 3 container.
+\begin{itemize}
+    \item \hostname{Alpine-Client} (\ipaddress{192.168.0.2}, \interface{br0})
+    \item \hostname{Alpine-VPN-Server} (\ipaddress{192.168.3.2}, \interface{br1})
+    \item \hostname{pr-h1} (\ipaddress{10.100.0.3}, connesso ad \interface{eth1} di \hostname{Alpine-VPN-Server})
+\end{itemize}
+
+\subsection{Creazione delle interfacce di bridge}
+\subsubsection{\interface{br0}}
+\interface{br0} si occupa di gestire la sottorete \ipaddress{192.168.0.0/24},
+configuriamola quindi come tale:
+\begin{lstlisting}
+    # brctl addbr br0
+    # ip addr add 192.168.0.1/24 dev br0
+    # ip link set br0 up
+\end{lstlisting}
+
+\subsubsection{\interface{br1}}
+\interface{br0} si occupa di gestire la sottorete \ipaddress{192.168.3.0/24},
+configuriamola quindi come tale:
+\begin{lstlisting}
+    # brctl addbr br1
+    # ip addr add 192.168.3.1/24 dev br1
+    # ip link set br1 up
+\end{lstlisting}
+
+\subsection{Configurazione di iptables per il routing dei pacchetti}
+Una volta configurate le interfacce di bridge dobbiamo configurare iptables per 
+fare il forwarding dei pacchetti provenienti da \interface{br0}, verso \interface{wlp7s0} (interfaccia wireless)
+e viceversa.
+
+\subsubsection{\interface{br0}}
+\begin{lstlisting}
+# iptables -A FORWARD --in-interface wlp7s0  \
+    --out-interface br0 --destination 192.168.0.0/24 \
+    -j ACCEPT
+
+# iptables -A FORWARD --in-interface br0 \
+    --out-interface wlp7s0 -j ACCEPT
+
+# iptables -t nat -A POSTROUTING \ 
+    --out-interface wlp7s0 \
+    -j MASQUERADE
+\end{lstlisting}
+\vspace{1em}
+Testiamo quindi il ping a \ipaddress{1.1.1.1} su \hostname{Alpine-Client} (\ipaddress{192.168.0.2}):
+\begin{lstlisting}
+Alpine-Client - / # ping 1.1.1.1
+PING 1.1.1.1 (1.1.1.1): 56 data bytes
+64 bytes from 1.1.1.1: seq=0 ttl=54 time=32.093 ms
+64 bytes from 1.1.1.1: seq=1 ttl=54 time=41.078 ms
+64 bytes from 1.1.1.1: seq=2 ttl=54 time=42.044 ms
+^C
+--- 1.1.1.1 ping statistics ---
+3 packets transmitted, 3 packets received, 0% packet loss
+round-trip min/avg/max = 32.093/38.405/42.044 ms
+\end{lstlisting}
+\vspace{1em}
+\subsubsection{\interface{br1}}
+\begin{lstlisting}
+# iptables -A FORWARD --in-interface wlp7s0  \
+    --out-interface br1 --destination 192.168.3.0/24 \
+    -j ACCEPT
+
+# iptables -A FORWARD --in-interface br1 \
+    --out-interface wlp7s0 -j ACCEPT
+\end{lstlisting}
+\vspace{1em}
+Proviamo ora il ping a \ipaddress{1.1.1.1} su \hostname{Alpine-VPN-Server} (\ipaddress{192.168.3.2}):
+\begin{lstlisting}
+Alpine-VPN-Server - / # ping 1.1.1.1
+PING 1.1.1.1 (1.1.1.1): 56 data bytes
+64 bytes from 1.1.1.1: seq=0 ttl=54 time=23.689 ms
+64 bytes from 1.1.1.1: seq=1 ttl=54 time=77.014 ms
+^C
+--- 1.1.1.1 ping statistics ---
+2 packets transmitted, 2 packets received, 0% packet loss
+round-trip min/avg/max = 23.689/50.351/77.014 ms
+\end{lstlisting}
+\vspace{1em}
+Infine testiamo e verifichiamo che le \hostname{Alpine-Client} ed \hostname{Alpine-VPN-Server} non si possano raggiungere a vicenda,
+e che la sottorete privata \ipaddress{10.100.0.0/24} sia raggiungibile solo da \hostname{Alpine-VPN-Server}, simulando quindi il
+caso in cui la sottorete \ipaddress{10.100.0.0/24} è privata e i due attori siano dietro ad un firewall.
+Apriamo infine la porta UDP/1194 per \hostname{Alpine-VPN-Server} verso l'esterno, in modo che Alpine-Client possa connettersi.
+
+
+\begin{lstlisting}
+Alpine-Client - / # ping 192.168.0.1
+PING 192.168.0.1 (192.168.0.1): 56 data bytes
+64 bytes from 192.168.0.1: seq=0 ttl=64 time=0.115 ms
+^C
+--- 192.168.0.1 ping statistics ---
+1 packets transmitted, 1 packets received, 0% packet loss
+round-trip min/avg/max = 0.115/0.115/0.115 ms
+
+Alpine-Client - / # ping 192.168.3.2
+PING 192.168.3.2 (192.168.3.2): 56 data bytes
+^C
+--- 192.168.3.2 ping statistics ---
+2 packets transmitted, 0 packets received, 100% packet loss
+\end{lstlisting}
+
+\begin{lstlisting}
+Alpine-VPN-Server - / # ping 192.168.3.1
+PING 192.168.3.1 (192.168.3.1): 56 data bytes
+64 bytes from 192.168.3.1: seq=0 ttl=64 time=0.241 ms
+^C
+--- 192.168.3.1 ping statistics ---
+1 packets transmitted, 1 packets received, 0% packet loss
+round-trip min/avg/max = 0.241/0.241/0.241 ms
+
+Alpine-VPN-Server - / # ping 192.168.0.2
+PING 192.168.0.2 (192.168.0.2): 56 data bytes
+^C
+--- 192.168.0.2 ping statistics ---
+2 packets transmitted, 0 packets received, 100% packet loss
+\end{lstlisting}
+\vspace{1em}
+
+\subsection{Abilitazione della porta UDP/1194 per \hostname{Alpine-VPN-Server}}
+Al fine di permettere ad Alpine-Client di connettersi con OpenVPN (una volta configurato) dobbiamo
+fare in modo che i pacchetti dalla rete \ipaddress{192.168.0.0/24} con destinazione \ipaddress{192.168.3.2} sulla porta UDP/1194
+vengano reindirizzati a br1. Per farlo usiamo iptables come segue:
+
+\begin{lstlisting}
+# iptables -t nat -I POSTROUTING -p udp --dport 1194 \
+    --destination 192.168.3.2 -j MASQUERADE \
+    --out-interface br1
+\end{lstlisting}
+\vspace{1em}
+e settiamo la tabella di forwarding specifica per i pacchetti con destinazione \ipaddress{192.168.3.2:1194/UDP}
+con sorgente \interface{br0} / \ipaddress{192.168.0.0/24}.
+
+\begin{lstlisting}
+# iptables -I FORWARD -p udp --dport 1194 \
+    --in-interface br0 --out-interface br1 \ 
+    --source 192.168.0.0/24 \
+    --destination 192.168.3.2 \
+    -j ACCEPT
+\end{lstlisting}
+\vspace{1em}
+Testiamo infine la configurazione nel seguente modo:
+\begin{enumerate}
+    \item Su \hostname{Alpine-VPN-Server} usiamo \inlinecode{nc -v -u -l -p 1194} per ascoltare su porta UDP 1194
+    e stampare a schermo i byte ricevuti.
+    \item Su \hostname{Alpine-Client} usiamo \inlinecode{date \| nc -vu 192.168.3.2 1194} per inviare la data
+    corrente come messaggio UDP a 192.168.3.2:1194.
+\end{enumerate}
+
+Se tutto funziona nel modo corretto e le porte sono aperte come specificato precedentemente,
+su \hostname{Alpine-VPN-Server} si vedrà apparire un output simile al seguente:
+\begin{lstlisting}
+Alpine-VPN-Server - / # nc -v -u -l -p 1194
+listening on [::]:1194 ...
+connect to 192.168.3.2:1194 from [::ffff:192.168.3.1]:49122 ([::ffff:192.168.3.1]:49122)
+Fri May 18 10:40:23 UTC 2018
+\end{lstlisting}
+
+Questo ci indica che la connessione via UDP da un qualsiasi client della sottorete 
+\ipaddress{192.168.0.0/24} (ed interfaccia \varname{br0})
+\pagebreak
+
+
+\section{Installazione e configurazione di OpenVPN}
+Il nostro obiettivo è quello di poter comunicare con la sottorete \ipaddress{10.100.0.0/24} da
+\ipaddress{192.168.0.0/24} (\interface{br0}) utilizzando \ipaddress{192.168.3.2} (\interface{br1})
+come server OpenVPN.
+
+\subsection{Installazione del pacchetto OpenVPN}
+Al fine di installare e configurare OpenVPN dobbiamo dapprima scaricare ed installare 
+OpenVPN su \hostname{Alpine-VPN-Server}
+
+\begin{lstlisting}
+Alpine-VPN-Server - / # apk add openvpn
+(1/8) Installing libelf (0.8.13-r3)
+(2/8) Installing libmnl (1.0.4-r0)
+(3/8) Installing jansson (2.10-r0)
+(4/8) Installing libnftnl-libs (1.0.8-r1)
+(5/8) Installing iptables (1.6.1-r1)
+(6/8) Installing iproute2 (4.13.0-r0)
+Executing iproute2-4.13.0-r0.post-install
+(7/8) Installing lzo (2.10-r2)
+(8/8) Installing openvpn (2.4.4-r1)
+Executing openvpn-2.4.4-r1.pre-install
+Executing busybox-1.27.2-r7.trigger
+OK: 8 MiB in 19 packages
+\end{lstlisting}
+
+
+\subsection{Configurazione di OpenVPN}
+Inseriamo ora la seguente configurazione in \path{/etc/openvpn/openvpn.conf}
+\begin{lstlisting}
+local "Public Ip address"
+port 1194
+proto udp
+dev tun
+ca openvpn_certs/server-ca.pem
+cert openvpn_certs/server-cert.pem
+dh openvpn_certs/dh1024.pem #to generate by hand #openssl dhparam -out dh1024.pem 1024
+server 10.0.0.0 255.255.255.0
+ifconfig-pool-persist ipp.txt
+push "route 10.0.0.0 255.0.0.0"
+push "dhcp-option DNS 10.0.0.1"
+keepalive 10 120
+comp-lzo
+user nobody
+group nobody
+persist-key
+persist-tun
+status /var/log/openvpn-status.log
+log-append  /var/log/openvpn.log
+verb 3
+\end{lstlisting}
+\end{document}
